@@ -96,15 +96,14 @@ public class CertificateHelperTests
         }
     }
 
-    [Fact]
-    public async Task ConvertedCertificate_CanBeUsedForServerTlsHandshake()
+    [Theory]
+    [InlineData("rsa-pkcs8")]
+    [InlineData("rsa-pkcs1")]
+    [InlineData("ec-pkcs8")]
+    [InlineData("ec-sec1")]
+    public async Task ConvertedCertificate_CanBeUsedForServerTlsHandshake(string keyKind)
     {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using var selfSigned = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
-
-        var certPem = _pemCert;
-        var keyPem = _pemPrivateKey;
+        var (certPem, keyPem) = CreatePem(keyKind);
 
         var secret = KubeResourceGenerator.CreateSecret("yarp-ingress-tls", "default", certPem, keyPem);
         var namespacedName = NamespacedName.From(secret);
@@ -147,6 +146,27 @@ public class CertificateHelperTests
         {
             listener.Stop();
         }
+    }
+
+    private static (byte[] Cert, byte[] Key) CreatePem(string keyKind)
+    {
+        var notBefore = DateTimeOffset.UtcNow.AddDays(-1);
+        var notAfter = DateTimeOffset.UtcNow.AddDays(1);
+
+        if (keyKind.StartsWith("rsa", StringComparison.Ordinal))
+        {
+            using var rsa = RSA.Create(2048);
+            var request = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using var cert = request.CreateSelfSigned(notBefore, notAfter);
+            var key = keyKind == "rsa-pkcs1" ? rsa.ExportRSAPrivateKeyPem() : rsa.ExportPkcs8PrivateKeyPem();
+            return (Encoding.ASCII.GetBytes(cert.ExportCertificatePem()), Encoding.ASCII.GetBytes(key));
+        }
+
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var ecRequest = new CertificateRequest("CN=localhost", ecdsa, HashAlgorithmName.SHA256);
+        using var ecCert = ecRequest.CreateSelfSigned(notBefore, notAfter);
+        var ecKey = keyKind == "ec-sec1" ? ecdsa.ExportECPrivateKeyPem() : ecdsa.ExportPkcs8PrivateKeyPem();
+        return (Encoding.ASCII.GetBytes(ecCert.ExportCertificatePem()), Encoding.ASCII.GetBytes(ecKey));
     }
 
     private static byte[] ReadManifestData(string ending)
