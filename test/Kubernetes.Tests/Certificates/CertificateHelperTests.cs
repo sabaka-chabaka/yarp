@@ -103,8 +103,8 @@ public class CertificateHelperTests
         var request = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var selfSigned = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
 
-        var certPem = Encoding.ASCII.GetBytes(selfSigned.ExportCertificatePem());
-        var keyPem = Encoding.ASCII.GetBytes(rsa.ExportPkcs8PrivateKeyPem());
+        var certPem = _pemCert;
+        var keyPem = _pemPrivateKey;
 
         var secret = KubeResourceGenerator.CreateSecret("yarp-ingress-tls", "default", certPem, keyPem);
         var namespacedName = NamespacedName.From(secret);
