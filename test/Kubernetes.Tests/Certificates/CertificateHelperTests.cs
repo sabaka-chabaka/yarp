@@ -4,6 +4,14 @@
 using System.IO;
 using System.Linq;
 using System.Text;
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -85,6 +93,59 @@ public class CertificateHelperTests
         else
         {
             Assert.Null(actualCertificate);
+        }
+    }
+
+    [Fact]
+    public async Task ConvertedCertificate_CanBeUsedForServerTlsHandshake()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var selfSigned = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+
+        var certPem = Encoding.ASCII.GetBytes(selfSigned.ExportCertificatePem());
+        var keyPem = Encoding.ASCII.GetBytes(rsa.ExportPkcs8PrivateKeyPem());
+
+        var secret = KubeResourceGenerator.CreateSecret("yarp-ingress-tls", "default", certPem, keyPem);
+        var namespacedName = NamespacedName.From(secret);
+
+        using var converted = _certificateHelper.ConvertCertificate(namespacedName, secret);
+        Assert.NotNull(converted);
+        Assert.True(converted.HasPrivateKey);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+            var serverTask = Task.Run(async () =>
+            {
+                using var serverClient = await listener.AcceptTcpClientAsync(cts.Token);
+                using var serverSsl = new SslStream(serverClient.GetStream());
+                await serverSsl.AuthenticateAsServerAsync(
+                    new SslServerAuthenticationOptions { ServerCertificate = converted },
+                    cts.Token);
+            });
+
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port, cts.Token);
+            using var clientSsl = new SslStream(client.GetStream());
+            await clientSsl.AuthenticateAsClientAsync(
+                new SslClientAuthenticationOptions
+                {
+                    TargetHost = "localhost",
+                    RemoteCertificateValidationCallback = (_, _, _, _) => true,
+                },
+                cts.Token);
+
+            await serverTask;
+            Assert.True(clientSsl.IsAuthenticated);
+        }
+        finally
+        {
+            listener.Stop();
         }
     }
 
